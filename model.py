@@ -20,8 +20,8 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.ops import rnn_cell
 from attention_decoder import attention_decoder
-from tensorflow.contrib.tensorboard.plugins import projector
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -85,8 +85,8 @@ class SummarizationModel(object):
         Each are LSTMStateTuples of shape ([batch_size,hidden_dim],[batch_size,hidden_dim])
     """
     with tf.variable_scope('encoder'):
-      cell_fw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
-      cell_bw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
+      cell_fw = rnn_cell.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
+      cell_bw = rnn_cell.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
       (encoder_outputs, (fw_st, bw_st)) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, encoder_inputs, dtype=tf.float32, sequence_length=seq_len, swap_memory=True)
       encoder_outputs = tf.concat(axis=2, values=encoder_outputs) # concatenate the forwards and backwards states
     return encoder_outputs, fw_st, bw_st
@@ -116,7 +116,7 @@ class SummarizationModel(object):
       old_h = tf.concat(axis=1, values=[fw_st.h, bw_st.h]) # Concatenation of fw and bw state
       new_c = tf.nn.relu(tf.matmul(old_c, w_reduce_c) + bias_reduce_c) # Get new cell from old cell
       new_h = tf.nn.relu(tf.matmul(old_h, w_reduce_h) + bias_reduce_h) # Get new state from old state
-      return tf.contrib.rnn.LSTMStateTuple(new_c, new_h) # Return new cell and state
+      return rnn_cell.LSTMStateTuple(new_c, new_h) # Return new cell and state
 
 
   def _add_decoder(self, inputs):
@@ -133,7 +133,7 @@ class SummarizationModel(object):
       coverage: A tensor, the current coverage vector
     """
     hps = self._hps
-    cell = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
+    cell = rnn_cell.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
 
     prev_coverage = self.prev_coverage if hps.mode=="decode" and hps.coverage else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
 
@@ -169,7 +169,7 @@ class SummarizationModel(object):
       batch_nums = tf.expand_dims(batch_nums, 1) # shape (batch_size, 1)
       attn_len = tf.shape(self._enc_batch_extend_vocab)[1] # number of states we attend over
       batch_nums = tf.tile(batch_nums, [1, attn_len]) # shape (batch_size, attn_len)
-      indices = tf.stack( (batch_nums, self._enc_batch_extend_vocab), axis=2) # shape (batch_size, enc_t, 2)
+      indices = tf.pack( (batch_nums, self._enc_batch_extend_vocab), axis=2) # shape (batch_size, enc_t, 2)
       shape = [self._hps.batch_size, extended_vsize]
       attn_dists_projected = [tf.scatter_nd(indices, copy_dist, shape) for copy_dist in attn_dists] # list length max_dec_steps (batch_size, extended_vsize)
 
@@ -180,19 +180,6 @@ class SummarizationModel(object):
 
       return final_dists
 
-  def _add_emb_vis(self, embedding_var):
-    """Do setup so that we can view word embedding visualization in Tensorboard, as described here:
-    https://www.tensorflow.org/get_started/embedding_viz
-    Make the vocab metadata file, then make the projector config file pointing to it."""
-    train_dir = os.path.join(FLAGS.log_root, "train")
-    vocab_metadata_path = os.path.join(train_dir, "vocab_metadata.tsv")
-    self._vocab.write_metadata(vocab_metadata_path) # write metadata file
-    summary_writer = tf.summary.FileWriter(train_dir)
-    config = projector.ProjectorConfig()
-    embedding = config.embeddings.add()
-    embedding.tensor_name = embedding_var.name
-    embedding.metadata_path = vocab_metadata_path
-    projector.visualize_embeddings(summary_writer, config)
 
   def _add_seq2seq(self):
     """Add the whole sequence-to-sequence model to the graph."""
@@ -207,9 +194,8 @@ class SummarizationModel(object):
       # Add embedding matrix (shared by the encoder and decoder inputs)
       with tf.variable_scope('embedding'):
         embedding = tf.get_variable('embedding', [vsize, hps.emb_dim], dtype=tf.float32, initializer=self.trunc_norm_init)
-        if hps.mode=="train": self._add_emb_vis(embedding) # add to tensorboard
         emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch) # tensor with shape (batch_size, max_enc_steps, emb_size)
-        emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
+        emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unpack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
 
       # Add the encoder.
       enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
@@ -255,7 +241,7 @@ class SummarizationModel(object):
             batch_nums = tf.range(0, limit=hps.batch_size) # shape (batch_size)
             for dec_step, log_dist in enumerate(log_dists):
               targets = self._target_batch[:,dec_step] # The indices of the target words. shape (batch_size)
-              indices = tf.stack( (batch_nums, targets), axis=1) # shape (batch_size, 2)
+              indices = tf.pack( (batch_nums, targets), axis=1) # shape (batch_size, 2)
               losses = tf.gather_nd(-log_dist, indices) # shape (batch_size). loss on this step for each batch
               loss_per_step.append(losses)
 
@@ -263,17 +249,14 @@ class SummarizationModel(object):
             self._loss = _mask_and_avg(loss_per_step, self._padding_mask)
 
           else: # baseline model
-            self._loss = tf.contrib.seq2seq.sequence_loss(tf.stack(vocab_scores, axis=1), self._target_batch, self._padding_mask) # this applies softmax internally
+            self._loss = tf.nn.seq2seq.sequence_loss(tf.pack(vocab_scores, axis=1), self._target_batch, self._padding_mask) # this applies softmax internally
 
-          tf.summary.scalar('loss', self._loss)
 
           # Calculate coverage loss from the attention distributions
           if hps.coverage:
             with tf.variable_scope('coverage_loss'):
               self._coverage_loss = _coverage_loss(self.attn_dists, self._padding_mask)
-              tf.summary.scalar('coverage_loss', self._coverage_loss)
             self._total_loss = self._loss + hps.cov_loss_wt * self._coverage_loss
-            tf.summary.scalar('total_loss', self._total_loss)
 
     if hps.mode == "decode":
       # We run decode beam search mode one decoder step at a time
@@ -294,7 +277,6 @@ class SummarizationModel(object):
       grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm)
 
     # Add a summary
-    tf.summary.scalar('global_norm', global_norm)
 
     # Apply adagrad optimizer
     optimizer = tf.train.AdagradOptimizer(self._hps.lr, initial_accumulator_value=self._hps.adagrad_init_acc)
@@ -312,7 +294,6 @@ class SummarizationModel(object):
     self.global_step = tf.Variable(0, name='global_step', trainable=False)
     if self._hps.mode == 'train':
       self._add_train_op()
-    self._summaries = tf.summary.merge_all()
     t1 = time.time()
     tf.logging.info('Time to build graph: %i seconds', t1 - t0)
 
@@ -321,7 +302,6 @@ class SummarizationModel(object):
     feed_dict = self._make_feed_dict(batch)
     to_return = {
         'train_op': self._train_op,
-        'summaries': self._summaries,
         'loss': self._loss,
         'global_step': self.global_step,
     }
@@ -357,7 +337,7 @@ class SummarizationModel(object):
 
     # dec_in_state is LSTMStateTuple shape ([batch_size,hidden_dim],[batch_size,hidden_dim])
     # Given that the batch is a single example repeated, dec_in_state is identical across the batch so we just take the top row.
-    dec_in_state = tf.contrib.rnn.LSTMStateTuple(dec_in_state.c[0], dec_in_state.h[0])
+    dec_in_state = rnn_cell.LSTMStateTuple(dec_in_state.c[0], dec_in_state.h[0])
     return enc_states, dec_in_state
 
 
@@ -389,7 +369,7 @@ class SummarizationModel(object):
     hiddens = [np.expand_dims(state.h, axis=0) for state in dec_init_states]
     new_c = np.concatenate(cells, axis=0)  # shape [batch_size,hidden_dim]
     new_h = np.concatenate(hiddens, axis=0)  # shape [batch_size,hidden_dim]
-    new_dec_in_state = tf.contrib.rnn.LSTMStateTuple(new_c, new_h)
+    new_dec_in_state = rnn_cell.LSTMStateTuple(new_c, new_h)
 
     feed = {
         self._enc_states: enc_states,
@@ -416,7 +396,7 @@ class SummarizationModel(object):
     results = sess.run(to_return, feed_dict=feed) # run the decoder step
 
     # Convert results['states'] (a single LSTMStateTuple) into a list of LSTMStateTuple -- one for each hypothesis
-    new_states = [tf.contrib.rnn.LSTMStateTuple(results['states'].c[i, :], results['states'].h[i, :]) for i in xrange(beam_size)]
+    new_states = [rnn_cell.LSTMStateTuple(results['states'].c[i, :], results['states'].h[i, :]) for i in xrange(beam_size)]
 
     # Convert singleton list containing a tensor to a list of k arrays
     assert len(results['attn_dists'])==1
