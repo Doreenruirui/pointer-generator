@@ -256,17 +256,19 @@ class Batcher(object):
             self._num_batch_q_threads = 4  # num threads to fill batch queue
             self._bucketing_cache_size = 100 # how many batches-worth of examples to load into cache before bucketing
 
+        self.fill_example_queue()
+        self.fill_batch_queue()
         # Start the threads that load the queues
-        self._example_q_threads = []
-        for _ in xrange(self._num_example_q_threads):
-            self._example_q_threads.append(Thread(target=self.fill_example_queue))
-            self._example_q_threads[-1].daemon = True
-            self._example_q_threads[-1].start()
-        self._batch_q_threads = []
-        for _ in xrange(self._num_batch_q_threads):
-            self._batch_q_threads.append(Thread(target=self.fill_batch_queue))
-            self._batch_q_threads[-1].daemon = True
-            self._batch_q_threads[-1].start()
+        # self._example_q_threads = []
+        # for _ in xrange(self._num_example_q_threads):
+            # self._example_q_threads.append(Thread(target=self.fill_example_queue))
+            # self._example_q_threads[-1].daemon = True
+            # self._example_q_threads[-1].start()
+        # self._batch_q_threads = []
+        # for _ in xrange(self._num_batch_q_threads):
+            # self._batch_q_threads.append(Thread(target=self.fill_batch_queue))
+            # self._batch_q_threads[-1].daemon = True
+            # self._batch_q_threads[-1].start()
 
         # Start a thread that watches the other threads and restarts them if they're dead
         if not single_pass: # We don't want a watcher in single_pass mode because the threads shouldn't run forever
@@ -310,7 +312,7 @@ class Batcher(object):
                 else:
                     raise Exception("single_pass mode is off but the example generator is out of data; error.")
 
-            abstract_sentences =  data.abstract2sents(abstract) # Use the <s> and </s> tags in abstract to get a list of sentences.
+            abstract_sentences = abstract # Use the <s> and </s> tags in abstract to get a list of sentences.
             example = Example(article, abstract_sentences, self._vocab, self._hps) # Process into an Example.
             self._example_queue.put(example) # place the Example in the example queue.
 
