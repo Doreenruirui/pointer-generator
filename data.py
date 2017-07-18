@@ -118,7 +118,7 @@ def example_generator(data_path, single_pass):
             random.shuffle(filelist)
 
         for i in range(len(filelist)):
-            yield (filelist[i][0], filelist[i][1])
+            yield (nlc_data.remove_nonascii(filelist[i][0]), nlc_data.remove_nonascii(filelist[i][1]))
         if single_pass:
             print "example_generator completed reading all datafiles. No more data."
             break
