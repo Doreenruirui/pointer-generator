@@ -22,7 +22,7 @@ import tensorflow as tf
 import beam_search
 import data
 import json
-import pyrouge
+# import pyrouge
 import util
 import logging
 import numpy as np
@@ -84,8 +84,8 @@ class BeamSearchDecoder(object):
         assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
         tf.logging.info("Decoder has finished reading dataset for single_pass.")
         tf.logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
-        results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-        rouge_log(results_dict, self._decode_dir)
+        # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
+        # rouge_log(results_dict, self._decode_dir)
         return
 
       original_article = batch.original_articles[0]  # string
@@ -205,16 +205,16 @@ def make_html_safe(s):
   return s
 
 
-def rouge_eval(ref_dir, dec_dir):
-  """Evaluate the files in ref_dir and dec_dir with pyrouge, returning results_dict"""
-  r = pyrouge.Rouge155()
-  r.model_filename_pattern = '#ID#_reference.txt'
-  r.system_filename_pattern = '(\d+)_decoded.txt'
-  r.model_dir = ref_dir
-  r.system_dir = dec_dir
-  logging.getLogger('global').setLevel(logging.WARNING) # silence pyrouge logging
-  rouge_results = r.convert_and_evaluate()
-  return r.output_to_dict(rouge_results)
+# def rouge_eval(ref_dir, dec_dir):
+#   """Evaluate the files in ref_dir and dec_dir with pyrouge, returning results_dict"""
+#   r = pyrouge.Rouge155()
+#   r.model_filename_pattern = '#ID#_reference.txt'
+#   r.system_filename_pattern = '(\d+)_decoded.txt'
+#   r.model_dir = ref_dir
+#   r.system_dir = dec_dir
+#   logging.getLogger('global').setLevel(logging.WARNING) # silence pyrouge logging
+#   rouge_results = r.convert_and_evaluate()
+#   return r.output_to_dict(rouge_results)
 
 
 def rouge_log(results_dict, dir_to_write):
