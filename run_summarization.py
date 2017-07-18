@@ -84,8 +84,7 @@ def calc_running_avg_loss(loss, running_avg_loss, step, decay=0.99):
     running_avg_loss = loss
   else:
     running_avg_loss = running_avg_loss * decay + (1 - decay) * loss
-  running_avg_loss = min(running_avg_loss, 12)
-  tag_name = 'running_avg_loss/decay=%f' % (decay)
+  running_avg_loss = min(running_avg_loss, 12)  # clip
   tf.logging.info('running_avg_loss: %f', running_avg_loss)
   return running_avg_loss
 
@@ -97,10 +96,10 @@ def convert_to_coverage_model():
   # initialize an entire coverage model from scratch
   sess = tf.Session(config=util.get_config())
   print "initializing everything..."
-  sess.run(tf.global_variables_initializer())
+  sess.run(tf.initialize_all_variables())
 
   # load all non-coverage weights from checkpoint
-  saver = tf.train.Saver([v for v in tf.global_variables() if "coverage" not in v.name and "Adagrad" not in v.name])
+  saver = tf.train.Saver([v for v in tf.all_variables() if "coverage" not in v.name and "Adagrad" not in v.name])
   print "restoring non-coverage variables..."
   curr_ckpt = util.load_ckpt(saver, sess)
   print "restored."
@@ -119,7 +118,7 @@ def setup_training(model, batcher):
   train_dir = os.path.join(FLAGS.log_root, "train")
   if not os.path.exists(train_dir): os.makedirs(train_dir)
 
-  default_device = tf.device('/cpu:0')
+  default_device = tf.device('/gpu:0')
   with default_device:
     model.build_graph() # build the graph
     if FLAGS.convert_to_coverage_model:
@@ -134,18 +133,17 @@ def setup_training(model, batcher):
                      save_summaries_secs=60, # save summaries for tensorboard every 60 secs
                      save_model_secs=60, # checkpoint every 60 secs
                      global_step=model.global_step)
-  summary_writer = sv.summary_writer
   tf.logging.info("Preparing or waiting for session...")
   sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
   tf.logging.info("Created session.")
   try:
-    run_training(model, batcher, sess_context_manager, sv, summary_writer) # this is an infinite loop until interrupted
+    run_training(model, batcher, sess_context_manager, sv) # this is an infinite loop until interrupted
   except KeyboardInterrupt:
     tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
     sv.stop()
 
 
-def run_training(model, batcher, sess_context_manager, sv, summary_writer):
+def run_training(model, batcher, sess_context_manager, sv):
   """Repeatedly runs training iterations, logging loss to screen and writing summaries"""
   tf.logging.info("starting run_training")
   with sess_context_manager as sess:
@@ -163,14 +161,6 @@ def run_training(model, batcher, sess_context_manager, sv, summary_writer):
       if FLAGS.coverage:
         coverage_loss = results['coverage_loss']
         tf.logging.info("coverage_loss: %f", coverage_loss) # print the coverage loss to screen
-
-      # get the summaries and iteration number so we can write summaries to tensorboard
-      summaries = results['summaries'] # we will write these summaries to tensorboard using summary_writer
-      train_step = results['global_step'] # we need this to update our running average loss
-
-      summary_writer.add_summary(summaries, train_step) # write the summaries
-      if train_step % 100 == 0: # flush the summary writer every so often
-        summary_writer.flush()
 
 
 def run_eval(model, batcher, vocab):
@@ -200,8 +190,6 @@ def run_eval(model, batcher, vocab):
       coverage_loss = results['coverage_loss']
       tf.logging.info("coverage_loss: %f", coverage_loss)
 
-    # add summaries
-    summaries = results['summaries']
     train_step = results['global_step']
     # calculate running avg loss
     running_avg_loss = calc_running_avg_loss(np.asscalar(loss), running_avg_loss, train_step)
@@ -212,7 +200,6 @@ def run_eval(model, batcher, vocab):
       tf.logging.info('Found new best model with %.3f running_avg_loss. Saving to %s', running_avg_loss, bestmodel_save_path)
       saver.save(sess, bestmodel_save_path, global_step=train_step, latest_filename='checkpoint_best')
       best_loss = running_avg_loss
-
 
 
 def main(unused_argv):
