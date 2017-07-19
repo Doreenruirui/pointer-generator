@@ -52,7 +52,7 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, cell, initi
     attn_size = encoder_states.get_shape()[2].value # if this line fails, it's because the attention length isn't defined
 
     # Reshape encoder_states (need to insert a dim)
-    encoder_states = tf.expand_dims(encoder_states, axis=2) # now is shape (batch_size, attn_len, 1, attn_size)
+    encoder_states = tf.expand_dims(encoder_states, dim=2) # now is shape (batch_size, attn_len, 1, attn_size)
 
     # To calculate attention, we calculate
     #   v^T tanh(W_h h_i + W_s s_t + b_attn)
@@ -212,7 +212,7 @@ def linear(args, output_size, bias, bias_start=0.0, scope=None):
     if len(args) == 1:
       res = tf.matmul(args[0], matrix)
     else:
-      res = tf.matmul(tf.concat(axis=1, values=args), matrix)
+      res = tf.matmul(tf.concat(concat_dim=1, values=args), matrix)
     if not bias:
       return res
     bias_term = tf.get_variable(

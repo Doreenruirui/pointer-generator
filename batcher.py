@@ -41,8 +41,8 @@ class Example(object):
         self.hps = hps
 
         # Get ids of special tokens
-        start_decoding = nlc_data._SOS
-        stop_decoding = nlc_data._EOS
+        start_decoding = vocab.word2id(nlc_data._SOS)
+        stop_decoding = vocab.word2id(nlc_data._EOS)
 
         # Process the article
         article_words = article
@@ -74,7 +74,7 @@ class Example(object):
         # Store the original strings
         self.original_article = article
         self.original_abstract = abstract
-        self.original_abstract_sents = abstract_sentences
+        self.original_abstract_sents = abstract
 
 
     def get_dec_inp_targ_seqs(self, sequence, max_len, start_id, stop_id):
@@ -240,141 +240,57 @@ class Batcher(object):
         self._vocab = vocab
         self._hps = hps
         self._single_pass = single_pass
-
-        # Initialize a queue of Batches waiting to be used, and a queue of Examples waiting to be batched
-        self._batch_queue = Queue.Queue(self.BATCH_QUEUE_MAX)
-        self._example_queue = Queue.Queue(self.BATCH_QUEUE_MAX * self._hps.batch_size)
-
-        # Different settings depending on whether we're in single_pass mode or not
-        if single_pass:
-            self._num_example_q_threads = 1 # just one thread, so we read through the dataset just once
-            self._num_batch_q_threads = 1  # just one thread to batch examples
-            self._bucketing_cache_size = 1 # only load one batch's worth of examples before bucketing; this essentially means no bucketing
-            self._finished_reading = False # this will tell us when we're finished reading the dataset
-        else:
-            self._num_example_q_threads = 16 # num threads to fill example queue
-            self._num_batch_q_threads = 4  # num threads to fill batch queue
-            self._bucketing_cache_size = 100 # how many batches-worth of examples to load into cache before bucketing
-
-        self.fill_example_queue()
-        self.fill_batch_queue()
-        # Start the threads that load the queues
-        # self._example_q_threads = []
-        # for _ in xrange(self._num_example_q_threads):
-            # self._example_q_threads.append(Thread(target=self.fill_example_queue))
-            # self._example_q_threads[-1].daemon = True
-            # self._example_q_threads[-1].start()
-        # self._batch_q_threads = []
-        # for _ in xrange(self._num_batch_q_threads):
-            # self._batch_q_threads.append(Thread(target=self.fill_batch_queue))
-            # self._batch_q_threads[-1].daemon = True
-            # self._batch_q_threads[-1].start()
-
-        # Start a thread that watches the other threads and restarts them if they're dead
-        if not single_pass: # We don't want a watcher in single_pass mode because the threads shouldn't run forever
-            self._watch_thread = Thread(target=self.watch_threads)
-            self._watch_thread.daemon = True
-            self._watch_thread.start()
+        self.batches = []
 
 
-    def next_batch(self):
-        """Return a Batch from the batch queue.
-
-        If mode='decode' then each batch contains a single example repeated beam_size-many times; this is necessary for beam search.
-
-        Returns:
-          batch: a Batch object, or None if we're in single_pass mode and we've exhausted the dataset.
-        """
-        # If the batch queue is empty, print a warning
-        if self._batch_queue.qsize() == 0:
-            tf.logging.warning('Bucket input queue is empty when calling next_batch.'
-                               ' Bucket queue size: %i, Input queue size: %i', self._batch_queue.qsize(), self._example_queue.qsize())
-            if self._single_pass and self._finished_reading:
-                tf.logging.info("Finished reading dataset in single_pass mode.")
-                return None
-
-        batch = self._batch_queue.get() # get the next Batch
-        return batch
-
-
-    def fill_example_queue(self):
-        """Reads data from file and processes into Examples which are then placed into the example queue."""
-        input_gen = self.text_generator(data.example_generator(self._data_path, self._single_pass))
-        while True:
-            try:
-                (article, abstract) = input_gen.next() # read the next example from file. article and abstract are both strings.
-            except StopIteration: # if there are no more examples:
-                tf.logging.info("The example generator for this example queue filling thread has exhausted data.")
-                if self._single_pass:
-                    tf.logging.info("single_pass mode is on, so we've finished reading dataset. This thread is stopping.")
-                    self._finished_reading = True
-                    break
-                else:
-                    raise Exception("single_pass mode is off but the example generator is out of data; error.")
-
-            abstract_sentences = abstract # Use the <s> and </s> tags in abstract to get a list of sentences.
-            example = Example(article, abstract_sentences, self._vocab, self._hps) # Process into an Example.
-            self._example_queue.put(example) # place the Example in the example queue.
-
-
-    def fill_batch_queue(self):
+    def pair_iter(self):
         """Takes Examples out of example queue, sorts them by encoder sequence length, processes into Batches and places them in the batch queue.
 
         In decode mode, makes batches that each contain a single example repeated.
         """
+
+        fdx, fdy = open(self._data_path + '.x.txt'), open(self._data_path + '.y.txt')
+        self.batches = []
         while True:
-            if self._hps.mode != 'decode':
-                # Get bucketing_cache_size-many batches of Examples into a list, then sort
-                inputs = []
-                for _ in xrange(self._hps.batch_size * self._bucketing_cache_size):
-                    inputs.append(self._example_queue.get())
+            if len(self.batches) == 0:
+                self.refill(fdx, fdy)
+            if len(self.batches) == 0:
+                break
+            batch = self.batches.pop(0)
+            yield batch
+        return
+
+    def refill(self, fdx, fdy):
+        if self._hps.mode != 'decode':
+            linex, liney = fdx.readline(), fdy.readline()
+            inputs = []
+            while linex and liney:
+                x, y = nlc_data.remove_nonascii(linex), nlc_data.remove_nonascii(liney)
+                if len(x)==0: # See https://github.com/abisee/pointer-generator/issues/1
+                    tf.logging.warning('Found an example with empty article text. Skipping it.')
+                else:
+                    example = Example(x, y, self._vocab, self._hps) # Process into an Example.
+                    inputs.append(example)
+                    if len(inputs) == self._hps.batch_size * 16:
+                        break
+                linex, liney = fdx.readline(), fdy.readline()
+            if not self._single_pass:
                 inputs = sorted(inputs, key=lambda inp: inp.enc_len) # sort by length of encoder sequence
-
-                # Group the sorted Examples into batches, optionally shuffle the batches, and place in the batch queue.
-                batches = []
-                for i in xrange(0, len(inputs), self._hps.batch_size):
-                    batches.append(inputs[i:i + self._hps.batch_size])
-                if not self._single_pass:
-                    shuffle(batches)
-                for b in batches:  # each b is a list of Example objects
-                    self._batch_queue.put(Batch(b, self._hps, self._vocab))
-
-            else: # beam search decode mode
-                ex = self._example_queue.get()
-                b = [ex for _ in xrange(self._hps.batch_size)]
-                self._batch_queue.put(Batch(b, self._hps, self._vocab))
-
-
-    def watch_threads(self):
-        """Watch example queue and batch queue threads and restart if dead."""
-        while True:
-            time.sleep(60)
-            for idx,t in enumerate(self._example_q_threads):
-                if not t.is_alive(): # if the thread is dead
-                    tf.logging.error('Found example queue thread dead. Restarting.')
-                    new_t = Thread(target=self.fill_example_queue)
-                    self._example_q_threads[idx] = new_t
-                    new_t.daemon = True
-                    new_t.start()
-            for idx,t in enumerate(self._batch_q_threads):
-                if not t.is_alive(): # if the thread is dead
-                    tf.logging.error('Found batch queue thread dead. Restarting.')
-                    new_t = Thread(target=self.fill_batch_queue)
-                    self._batch_q_threads[idx] = new_t
-                    new_t.daemon = True
-                    new_t.start()
-
-
-    def text_generator(self, example_generator):
-        """Generates article and abstract text from tf.Example.
-
-        Args:
-          example_generator: a generator of tf.Examples from file. See data.example_generator"""
-        while True:
-            e = example_generator.next() # e is a tf.Example
-            article_text = e[0] # the article text was saved under the key 'article' in the data files
-            abstract_text = e[1] # the abstract text was saved under the key 'abstract' in the data files)
-            if len(article_text)==0: # See https://github.com/abisee/pointer-generator/issues/1
-                tf.logging.warning('Found an example with empty article text. Skipping it.')
-            else:
-                yield (article_text, abstract_text)
+            cur_batches = []
+            for batch_start in xrange(0, len(inputs), self._hps.batch_size):
+                cur_batches.append(inputs[batch_start : batch_start + self._hps.batch_size])
+            for b in cur_batches:  # each b is a list of Example objects
+                self.batches.append(Batch(b, self._hps, self._vocab))
+            if not self._single_pass:
+                np.random.shuffle(self.batches)
+        else:
+            linex, liney = fdx.readline(), fdy.readline()
+            batch = []
+            while linex and liney:
+                x, y = nlc_data.remove_nonascii(linex), nlc_data.remove_nonascii(liney)
+                example = Example(x, y, self._vocab, self._hps) # Process in
+                batch.append(example)
+                if len(batch) == self._hps.batch_size:
+                    break
+            self.batches.append(Batch(batch, self._hps, self._vocab))
+        return
